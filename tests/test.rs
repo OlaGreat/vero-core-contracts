@@ -105,17 +105,13 @@ fn test_multiple_low_rep_guardians_accumulate_weight() {
     let g2 = add_guardian_with_rep(&env, &client, &admin, 100);
     let g3 = add_guardian_with_rep(&env, &client, &admin, 100);
 
-    client.add_guardian(&admin, &g1);
-    client.add_guardian(&admin, &g2);
-    client.add_guardian(&admin, &g3);
     client.register_task(&admin, &42u64);
 
     client.vote(&g1, &42u64);
     client.vote(&g2, &42u64);
     client.vote(&g3, &42u64);
 
-    client.vote(&g3, &10u64);
-    let task = client.get_task(&10u64).unwrap();
+    let task = client.get_task(&42u64).unwrap();
     assert_eq!(task.total_weight_accrued, 300);
     assert_eq!(task.votes, 3);
     assert!(task.is_done, "three low-rep guardians should resolve task");
@@ -212,10 +208,9 @@ fn test_vote_rejected_without_reputation() {
 
     client.add_guardian(&admin, &g);
     client.register_task(&admin, &7u64);
-    client.vote(&g, &7u64);
 
     let result = client.try_vote(&g, &7u64);
-    assert!(result.is_err(), "duplicate vote should be rejected");
+    assert!(result.is_err(), "vote without reputation should be rejected");
 }
 
 #[test]
@@ -289,13 +284,10 @@ fn test_reward_stream_duplicate_rejected() {
     let (env, admin, client) = setup();
     let contributor = Address::generate(&env);
 
-    let g1 = Address::generate(&env);
-    let g2 = Address::generate(&env);
-    let g3 = Address::generate(&env);
+    let g1 = add_guardian_with_rep(&env, &client, &admin, 100);
+    let g2 = add_guardian_with_rep(&env, &client, &admin, 100);
+    let g3 = add_guardian_with_rep(&env, &client, &admin, 100);
 
-    client.add_guardian(&admin, &g1);
-    client.add_guardian(&admin, &g2);
-    client.add_guardian(&admin, &g3);
     client.register_task(&admin, &50u64);
 
     client.vote(&g1, &50u64);
@@ -319,13 +311,10 @@ fn test_reward_stream_stored_after_success() {
     let (env, admin, client) = setup();
     let contributor = Address::generate(&env);
 
-    let g1 = Address::generate(&env);
-    let g2 = Address::generate(&env);
-    let g3 = Address::generate(&env);
+    let g1 = add_guardian_with_rep(&env, &client, &admin, 100);
+    let g2 = add_guardian_with_rep(&env, &client, &admin, 100);
+    let g3 = add_guardian_with_rep(&env, &client, &admin, 100);
 
-    client.add_guardian(&admin, &g1);
-    client.add_guardian(&admin, &g2);
-    client.add_guardian(&admin, &g3);
     client.register_task(&admin, &77u64);
 
     client.vote(&g1, &77u64);
@@ -349,11 +338,9 @@ fn test_lock_released_after_successful_vote() {
     // After a normal vote the lock must be cleared so subsequent votes work.
     // If the lock leaked, the second vote would fail with Locked.
     let (env, admin, client) = setup();
-    let g1 = Address::generate(&env);
-    let g2 = Address::generate(&env);
+    let g1 = add_guardian_with_rep(&env, &client, &admin, 100);
+    let g2 = add_guardian_with_rep(&env, &client, &admin, 100);
 
-    client.add_guardian(&admin, &g1);
-    client.add_guardian(&admin, &g2);
     client.register_task(&admin, &202u64);
 
     client.vote(&g1, &202u64);
@@ -380,10 +367,9 @@ fn test_lock_released_after_failed_vote() {
     // When vote() fails early (non-guardian), the lock must still be released
     // so a subsequent legitimate call can succeed.
     let (env, admin, client) = setup();
-    let g = Address::generate(&env);
+    let g = add_guardian_with_rep(&env, &client, &admin, 100);
     let stranger = Address::generate(&env);
 
-    client.add_guardian(&admin, &g);
     client.register_task(&admin, &303u64);
 
     // Non-guardian vote is rejected (lock must be released inside)
@@ -392,6 +378,82 @@ fn test_lock_released_after_failed_vote() {
     // Legitimate vote must still succeed
     client.vote(&g, &303u64);
     assert_eq!(client.get_task(&303u64).unwrap().votes, 1);
+}
+
+// ─── Emergency stop (pause) tests ─────────────────────────────────────
+
+#[test]
+fn test_admin_can_toggle_pause() {
+    let (_env, admin, client) = setup();
+
+    assert!(!client.is_paused(), "contract should start unpaused");
+
+    client.toggle_pause(&admin);
+    assert!(client.is_paused(), "contract should be paused after toggle");
+
+    client.toggle_pause(&admin);
+    assert!(!client.is_paused(), "contract should be unpaused after second toggle");
+}
+
+#[test]
+fn test_contract_paused_error_on_register_task() {
+    let (_env, admin, client) = setup();
+
+    client.toggle_pause(&admin);
+
+    let result = client.try_register_task(&admin, &1u64);
+    assert!(result.is_err(), "register_task should fail when paused");
+}
+
+#[test]
+fn test_contract_paused_error_on_vote() {
+    let (env, admin, client) = setup();
+    let g = add_guardian_with_rep(&env, &client, &admin, 300);
+    client.register_task(&admin, &1u64);
+
+    client.toggle_pause(&admin);
+
+    let result = client.try_vote(&g, &1u64);
+    assert!(result.is_err(), "vote should fail when paused");
+}
+
+#[test]
+fn test_contract_paused_error_on_add_guardian() {
+    let (env, admin, client) = setup();
+    let guardian = Address::generate(&env);
+
+    client.toggle_pause(&admin);
+
+    let result = client.try_add_guardian(&admin, &guardian);
+    assert!(result.is_err(), "add_guardian should fail when paused");
+}
+
+#[test]
+fn test_contract_paused_error_on_set_reputation() {
+    let (env, admin, client) = setup();
+    let guardian = Address::generate(&env);
+    client.add_guardian(&admin, &guardian);
+
+    client.toggle_pause(&admin);
+
+    let result = client.try_set_reputation(&admin, &guardian, &100u64);
+    assert!(result.is_err(), "set_reputation should fail when paused");
+}
+
+#[test]
+fn test_operations_resume_after_unpause() {
+    let (env, admin, client) = setup();
+    let g = add_guardian_with_rep(&env, &client, &admin, 300);
+
+    client.toggle_pause(&admin);
+    assert!(client.try_register_task(&admin, &1u64).is_err());
+
+    client.toggle_pause(&admin);
+    client.register_task(&admin, &1u64);
+    client.vote(&g, &1u64);
+
+    let task = client.get_task(&1u64).unwrap();
+    assert!(task.is_done, "task should resolve after unpause");
 }
 
 // ─── Mock Drips contract for test isolation ────────────────────────────

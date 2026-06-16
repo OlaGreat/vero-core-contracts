@@ -2,6 +2,7 @@
 
 mod drips;
 mod guardian;
+mod reentrancy;
 mod reputation;
 mod task;
 mod types;
@@ -19,51 +20,108 @@ pub use drips::{get_reward_stream, start_drips_stream};
 /// admin via `set_weight_threshold`.
 const DEFAULT_WEIGHT_THRESHOLD: u64 = 300;
 
+fn require_not_paused(env: &Env) -> Result<(), ContractError> {
+    if env
+        .storage()
+        .instance()
+        .get::<DataKey, bool>(&DataKey::Paused)
+        .unwrap_or(false)
+    {
+        return Err(ContractError::ContractPaused);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct VeroContract;
 
 #[contractimpl]
 impl VeroContract {
+    // ─── Emergency stop ────────────────────────────────────────────
+
+    /// Toggles the global pause state. Only callable by admin.
+    /// When paused, all public methods return `ContractPaused`.
+    pub fn toggle_pause(env: Env, admin: Address) {
+        admin.require_auth();
+        let current: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        env.storage().instance().set(&DataKey::Paused, &!current);
+        events::emit_pause_toggled(&env, !current);
+    }
+
+    /// Returns the current pause state.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     // ─── Guardian management ───────────────────────────────────────
 
-    pub fn add_guardian(env: Env, admin: Address, guardian: Address) {
+    pub fn add_guardian(env: Env, admin: Address, guardian: Address) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
         guardian::add_guardian(&env, admin, guardian);
+        Ok(())
     }
 
     // ─── Reputation management ─────────────────────────────────────
 
     /// Sets the reputation score for a guardian. Only callable by admin.
-    pub fn set_reputation(env: Env, admin: Address, guardian: Address, score: u64) {
+    pub fn set_reputation(
+        env: Env,
+        admin: Address,
+        guardian: Address,
+        score: u64,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
         reputation::set_reputation(&env, admin, guardian, score);
+        Ok(())
     }
 
     /// Returns the raw reputation score for a guardian.
-    pub fn get_reputation(env: Env, guardian: Address) -> Option<u64> {
-        reputation::get_reputation(&env, &guardian)
+    pub fn get_reputation(env: Env, guardian: Address) -> Result<Option<u64>, ContractError> {
+        require_not_paused(&env)?;
+        Ok(reputation::get_reputation(&env, &guardian))
     }
 
     /// Calculates the voting power (weight) for a given guardian
     /// based on their reputation score.
-    pub fn calculate_voting_power(env: Env, guardian: Address) -> Option<u64> {
-        reputation::calculate_voting_power(&env, &guardian)
+    pub fn calculate_voting_power(
+        env: Env,
+        guardian: Address,
+    ) -> Result<Option<u64>, ContractError> {
+        require_not_paused(&env)?;
+        Ok(reputation::calculate_voting_power(&env, &guardian))
     }
 
     /// Sets the cumulative weight threshold required to resolve a task.
     /// Only callable by admin.
-    pub fn set_weight_threshold(env: Env, admin: Address, threshold: u64) {
+    pub fn set_weight_threshold(
+        env: Env,
+        admin: Address,
+        threshold: u64,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
             .set(&DataKey::WeightThreshold, &threshold);
+        Ok(())
     }
 
     /// Returns the current weight threshold, falling back to the
     /// compiled default if none has been set.
-    pub fn get_weight_threshold(env: Env) -> u64 {
-        env.storage()
+    pub fn get_weight_threshold(env: Env) -> Result<u64, ContractError> {
+        require_not_paused(&env)?;
+        Ok(env
+            .storage()
             .instance()
             .get(&DataKey::WeightThreshold)
-            .unwrap_or(DEFAULT_WEIGHT_THRESHOLD)
+            .unwrap_or(DEFAULT_WEIGHT_THRESHOLD))
     }
 
     // ─── Task lifecycle ────────────────────────────────────────────
@@ -73,6 +131,7 @@ impl VeroContract {
         admin: Address,
         task_id: u64,
     ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
         task::register_task(&env, admin, task_id)
     }
 
@@ -82,13 +141,16 @@ impl VeroContract {
     /// weight meets or exceeds the threshold, the task is resolved.
     ///
     /// # Errors
-    /// * `NotAuthorized` — caller is not a registered guardian, or task not found.
-    /// * `DuplicateVote` — guardian already voted on this task.
+    /// * `ContractPaused`    — contract is currently paused.
+    /// * `NotAuthorized`     — caller is not a registered guardian, or task not found.
+    /// * `DuplicateVote`     — guardian already voted on this task.
     /// * `NoReputationScore` — guardian has no reputation score assigned.
-    /// * `ZeroWeightVote` — guardian's reputation score is zero.
-    /// * `WeightOverflow` — adding the weight would overflow u64.
+    /// * `ZeroWeightVote`    — guardian's reputation score is zero.
+    /// * `WeightOverflow`    — adding the weight would overflow u64.
     pub fn vote(env: Env, guardian: Address, task_id: u64) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
         guardian.require_auth();
+        reentrancy::lock(&env)?;
 
         // 1. Verify guardian status
         if !guardian::is_guardian(&env, &guardian) {
@@ -104,10 +166,16 @@ impl VeroContract {
         }
 
         // 3. Fetch voting power from reputation — single storage read
-        let weight = reputation::calculate_voting_power(&env, &guardian)
-            .ok_or(ContractError::NoReputationScore)?;
+        let weight = match reputation::calculate_voting_power(&env, &guardian) {
+            Some(w) => w,
+            None => {
+                reentrancy::unlock(&env);
+                return Err(ContractError::NoReputationScore);
+            }
+        };
 
         if weight == 0 {
+            reentrancy::unlock(&env);
             return Err(ContractError::ZeroWeightVote);
         }
 
@@ -122,10 +190,13 @@ impl VeroContract {
         };
 
         // 5. Atomically increment weight with overflow protection
-        t.total_weight_accrued = t
-            .total_weight_accrued
-            .checked_add(weight)
-            .ok_or(ContractError::WeightOverflow)?;
+        t.total_weight_accrued = match t.total_weight_accrued.checked_add(weight) {
+            Some(v) => v,
+            None => {
+                reentrancy::unlock(&env);
+                return Err(ContractError::WeightOverflow);
+            }
+        };
         t.votes += 1;
 
         // 6. Check weight threshold for consensus
@@ -146,23 +217,19 @@ impl VeroContract {
 
         events::emit_weighted_vote(&env, task_id, &guardian, weight);
 
+        reentrancy::unlock(&env);
         Ok(())
     }
 
-    pub fn get_task(env: Env, task_id: u64) -> Option<types::Task> {
-        task::get_task(&env, task_id)
+    pub fn get_task(env: Env, task_id: u64) -> Result<Option<types::Task>, ContractError> {
+        require_not_paused(&env)?;
+        Ok(task::get_task(&env, task_id))
     }
 
     /// Initiates a reward stream via the Drips protocol for a verified task.
     ///
     /// The caller (admin) must be authorized. The task must already be marked
     /// `is_done` via guardian consensus before a stream can be started.
-    ///
-    /// # Arguments
-    /// * `admin` - The admin address authorizing the stream.
-    /// * `drips_address` - The on-chain address of the Drips protocol contract.
-    /// * `contributor` - The contributor's address to receive the reward stream.
-    /// * `task_id` - The verified task ID.
     pub fn start_reward_stream(
         env: Env,
         admin: Address,
@@ -170,6 +237,7 @@ impl VeroContract {
         contributor: Address,
         task_id: u64,
     ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
         admin.require_auth();
 
         let result =
@@ -188,7 +256,11 @@ impl VeroContract {
     }
 
     /// Returns the reward stream record for a given task, if one exists.
-    pub fn get_reward_stream(env: Env, task_id: u64) -> Option<RewardStream> {
-        drips::get_reward_stream(&env, task_id)
+    pub fn get_reward_stream(
+        env: Env,
+        task_id: u64,
+    ) -> Result<Option<RewardStream>, ContractError> {
+        require_not_paused(&env)?;
+        Ok(drips::get_reward_stream(&env, task_id))
     }
 }
