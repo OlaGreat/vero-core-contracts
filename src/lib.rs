@@ -14,7 +14,7 @@ pub mod events;
 use soroban_sdk::{contract, contractimpl, Address, Env, Map};
 use types::{ContractError, DataKey, RewardStream, Snapshot};
 
-pub use guardian::{add_guardian, is_guardian};
+pub use guardian::{add_guardian, remove_guardian, is_guardian};
 pub use task::{get_task, register_task};
 pub use drips::{get_reward_stream, start_drips_stream};
 pub use types::Operation;
@@ -22,133 +22,46 @@ pub use types::Operation;
 const DEFAULT_WEIGHT_THRESHOLD: u64 = 300;
 
 #[contract]
-pub struct VeroContract;
+pub struct VeroCore;
 
 #[contractimpl]
-impl VeroContract {
-    pub fn initialize(
-        env: Env,
-        token: Address,
-        threshold: i128,
-    ) -> Result<(), ContractError> {
-        let token_key = DataKey::TokenAddress;
-        if env.storage().instance().has(&token_key) {
+impl VeroCore {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
+        if env.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
-        env.storage().instance().set(&token_key, &token);
-        env.storage().instance().set(&DataKey::LockThreshold, &threshold);
-        Ok(())
-    }
-
-    pub fn lock_tokens(
-        env: Env,
-        guardian: Address,
-        amount: i128,
-    ) -> Result<(), ContractError> {
-        guardian.require_auth();
-
-        let token_key = DataKey::TokenAddress;
-        if !env.storage().instance().has(&token_key) {
-            return Err(ContractError::NotInitialized);
-        }
-        let token_address: Address = env.storage().instance().get(&token_key).unwrap();
-
-        let client = soroban_sdk::token::Client::new(&env, &token_address);
-        client.transfer(&guardian, &env.current_contract_address(), &amount);
-
-        let balance_key = DataKey::LockedBalance(guardian.clone());
-        let current_balance: i128 = env.storage().instance().get(&balance_key).unwrap_or(0);
-        env.storage().instance().set(&balance_key, &(current_balance + amount));
-
-        Ok(())
-    }
-
-    pub fn resign_guardian(
-        env: Env,
-        guardian: Address,
-    ) -> Result<(), ContractError> {
-        guardian.require_auth();
-
-        let token_key = DataKey::TokenAddress;
-        if !env.storage().instance().has(&token_key) {
-            return Err(ContractError::NotInitialized);
-        }
-
-        if !guardian::is_guardian(&env, &guardian) {
-            return Err(ContractError::NotGuardian);
-        }
-
-        let key = DataKey::Guardian(guardian.clone());
-        env.storage().instance().set(&key, &false);
-
-        let balance_key = DataKey::LockedBalance(guardian.clone());
-        let locked_balance: i128 = env.storage().instance().get(&balance_key).unwrap_or(0);
-        if locked_balance > 0 {
-            let token_address: Address = env.storage().instance().get(&token_key).unwrap();
-            let client = soroban_sdk::token::Client::new(&env, &token_address);
-            client.transfer(&env.current_contract_address(), &guardian, &locked_balance);
-            env.storage().instance().set(&balance_key, &0i128);
-        }
-
-        Ok(())
-    }
-
-    pub fn unlock_tokens(
-        env: Env,
-        guardian: Address,
-    ) -> Result<(), ContractError> {
-        guardian.require_auth();
-
-        let token_key = DataKey::TokenAddress;
-        if !env.storage().instance().has(&token_key) {
-            return Err(ContractError::NotInitialized);
-        }
-
-        if guardian::is_guardian(&env, &guardian) {
-            return Err(ContractError::StillGuardian);
-        }
-
-        let balance_key = DataKey::LockedBalance(guardian.clone());
-        let locked_balance: i128 = env.storage().instance().get(&balance_key).unwrap_or(0);
-        if locked_balance > 0 {
-            let token_address: Address = env.storage().instance().get(&token_key).unwrap();
-            let client = soroban_sdk::token::Client::new(&env, &token_address);
-            client.transfer(&env.current_contract_address(), &guardian, &locked_balance);
-            env.storage().instance().set(&balance_key, &0i128);
-        }
-
-        Ok(())
-    }
-
-    // ─── Emergency stop ────────────────────────────────────────────
-
-    /// Toggles the global pause state. Only callable by admin.
-    pub fn toggle_pause(env: Env, admin: Address) {
         admin.require_auth();
-        let current: bool = env
-            .storage()
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
             .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        env.storage().instance().set(&DataKey::Paused, &!current);
-        events::emit_pause_toggled(&env, !current);
+            .extend_ttl(100_000, 100_000);
+        Ok(())
     }
 
-    /// Pauses the contract. Only callable by admin.
-    pub fn pause(env: Env, admin: Address) {
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    pub fn toggle_pause(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        let current = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        env.storage().instance().set(&DataKey::Paused, &!current);
+        Ok(())
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
-        events::emit_pause_toggled(&env, true);
+        Ok(())
     }
 
-    /// Unpauses the contract. Only callable by admin.
-    pub fn unpause(env: Env, admin: Address) {
+    pub fn unpause(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
-        events::emit_pause_toggled(&env, false);
+        Ok(())
     }
 
-    /// Returns the current pause state.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -156,19 +69,21 @@ impl VeroContract {
             .unwrap_or(false)
     }
 
-    // ─── Guardian management ───────────────────────────────────────
-
     pub fn add_guardian(env: Env, admin: Address, guardian: Address) -> Result<(), ContractError> {
         circuit_breaker::require_not_paused(&env)?;
         guardian::add_guardian(&env, admin, guardian);
         Ok(())
     }
 
+    pub fn remove_guardian(env: Env, admin: Address, guardian: Address) -> Result<(), ContractError> {
+        circuit_breaker::require_not_paused(&env)?;
+        guardian::remove_guardian(&env, admin, guardian);
+        Ok(())
+    }
+
     pub fn is_guardian(env: Env, guardian: Address) -> bool {
         guardian::is_guardian(&env, &guardian)
     }
-
-    // ─── Reputation management ─────────────────────────────────────
 
     pub fn set_reputation(
         env: Env,
@@ -185,16 +100,7 @@ impl VeroContract {
         reputation::get_reputation(&env, &guardian)
     }
 
-    pub fn calculate_voting_power(env: Env, guardian: Address) -> Option<u64> {
-        reputation::calculate_voting_power(&env, &guardian)
-    }
-
-    pub fn set_weight_threshold(
-        env: Env,
-        admin: Address,
-        threshold: u64,
-    ) -> Result<(), ContractError> {
-        circuit_breaker::require_not_paused(&env)?;
+    pub fn set_weight_threshold(env: Env, admin: Address, threshold: u64) -> Result<(), ContractError> {
         admin.require_auth();
         env.storage()
             .instance()

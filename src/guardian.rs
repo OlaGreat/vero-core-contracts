@@ -24,6 +24,17 @@ pub fn add_guardian(env: &Env, admin: Address, guardian: Address) {
         .extend_ttl(LEDGER_TTL, LEDGER_TTL);
 }
 
+pub fn remove_guardian(env: &Env, admin: Address, guardian: Address) {
+    admin.require_auth();
+
+    let key = DataKey::Guardian(guardian.clone());
+    if !env.storage().instance().has(&key) {
+        panic!("Guardian not found");
+    }
+
+    env.storage().instance().remove(&key);
+}
+
 pub fn is_guardian(env: &Env, guardian: &Address) -> bool {
     let key = DataKey::Guardian(guardian.clone());
     env.storage().instance().get(&key).unwrap_or(false)
