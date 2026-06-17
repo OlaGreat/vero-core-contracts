@@ -7,6 +7,7 @@ pub struct Task {
     pub votes: u32,
     pub is_done: bool,
     pub total_weight_accrued: u64,
+    pub is_cancelled: bool,
 }
 
 #[contracttype]
@@ -111,4 +112,5 @@ pub enum ContractError {
     Locked = 14,
     ContractPaused = 15,
     EscrowUnavailable = 16,
+    TaskCancelled = 17,
 }

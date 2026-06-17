@@ -15,6 +15,10 @@ pub fn start_drips_stream(
         .get(&task_key)
         .ok_or(ContractError::NotAuthorized)?;
 
+    if task.is_cancelled {
+        return Err(ContractError::TaskCancelled);
+    }
+
     if !task.is_done {
         return Err(ContractError::TaskNotVerified);
     }

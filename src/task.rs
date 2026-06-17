@@ -27,6 +27,7 @@ pub fn register_task(env: &Env, admin: Address, task_id: u64) -> Result<(), Cont
         votes: 0,
         is_done: false,
         total_weight_accrued: 0,
+        is_cancelled: false,
     };
     env.storage().instance().set(&key, &task);
 
