@@ -14,7 +14,7 @@ use soroban_sdk::{contract, contractimpl, Address, Env};
 use types::{ContractError, DataKey, RewardStream};
 
 pub use guardian::{add_guardian, is_guardian};
-pub use task::{get_task, register_task};
+pub use task::{cancel_task, get_task, register_task};
 pub use drips::{get_reward_stream, start_drips_stream};
 
 const DEFAULT_WEIGHT_THRESHOLD: u64 = 300;
@@ -216,13 +216,22 @@ impl VeroContract {
 
     // ─── Task lifecycle ────────────────────────────────────────────
 
-    pub fn register_task(
+     pub fn register_task(
         env: Env,
         admin: Address,
         task_id: u64,
     ) -> Result<(), ContractError> {
         circuit_breaker::require_not_paused(&env)?;
         task::register_task(&env, admin, task_id)
+    }
+
+    pub fn cancel_task(
+        env: Env,
+        admin: Address,
+        task_id: u64,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::require_not_paused(&env)?;
+        task::cancel_task(&env, admin, task_id)
     }
 
     pub fn vote(env: Env, guardian: Address, task_id: u64) -> Result<(), ContractError> {
@@ -276,6 +285,11 @@ impl VeroContract {
                 return Err(ContractError::NotAuthorized);
             }
         };
+
+        if t.is_cancelled {
+            reentrancy::unlock(&env);
+            return Err(ContractError::TaskCancelled);
+        }
 
         t.total_weight_accrued = match t.total_weight_accrued.checked_add(weight) {
             Some(v) => v,

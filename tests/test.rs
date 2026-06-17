@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Events as _},
     Address, Env,
 };
 use vero_core_contracts::VeroContractClient;
@@ -667,4 +667,73 @@ fn debug_circuit_breaker_count() {
 
     client.record_failure(); // 51st → trips
     assert!(client.is_paused());
+}
+
+// ─── Task cancellation ──────────────────────────────────────────────
+
+#[test]
+fn test_cancel_task_success() {
+    let (_env, admin, _token, client) = setup();
+    client.register_task(&admin, &100u64);
+
+    let task = client.get_task(&100u64).unwrap();
+    assert!(!task.is_cancelled);
+
+    client.cancel_task(&admin, &100u64);
+
+    let task = client.get_task(&100u64).unwrap();
+    assert!(task.is_cancelled);
+}
+
+#[test]
+fn test_cancel_task_nonexistent() {
+    let (_env, admin, _token, client) = setup();
+    let result = client.try_cancel_task(&admin, &999u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_vote_on_cancelled_task_reverts() {
+    let (env, admin, token, client) = setup();
+    client.register_task(&admin, &100u64);
+
+    let g = add_guardian_with_rep(&env, &client, &admin, 100);
+    lock_for_guardian(&env, &token, &client, &g, 101);
+
+    client.cancel_task(&admin, &100u64);
+
+    let result = client.try_vote(&g, &100u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cancel_task_emits_event() {
+    let (env, admin, _token, client) = setup();
+    client.register_task(&admin, &100u64);
+
+    client.cancel_task(&admin, &100u64);
+
+    let events = env.events().all();
+    assert!(events.len() > 0);
+    let last_event = events.get(events.len() - 1).unwrap();
+
+    use soroban_sdk::{TryFromVal, Symbol};
+    let topic_symbol = Symbol::try_from_val(&env, &last_event.1.get(0).unwrap()).unwrap();
+    assert_eq!(topic_symbol, soroban_sdk::symbol_short!("cancelled"));
+
+    let value_u64 = u64::try_from_val(&env, &last_event.2).unwrap();
+    assert_eq!(value_u64, 100u64);
+}
+
+#[test]
+fn test_start_reward_stream_on_cancelled_task_fails() {
+    let (env, admin, _token, client) = setup();
+    let contributor = Address::generate(&env);
+    let drips_addr = Address::generate(&env);
+
+    client.register_task(&admin, &100u64);
+    client.cancel_task(&admin, &100u64);
+
+    let result = client.try_start_reward_stream(&admin, &drips_addr, &contributor, &100u64);
+    assert!(result.is_err());
 }
