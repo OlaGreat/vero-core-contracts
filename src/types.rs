@@ -2,6 +2,17 @@ use soroban_sdk::{contracterror, contracttype, Address, Map, Vec};
 
 #[contracttype]
 #[derive(Clone)]
+pub struct WithdrawalRequest {
+    pub id: u64,
+    pub recipient: Address,
+    pub amount: i128,
+    pub requested_at_ledger: u32,
+    pub is_executed: bool,
+    pub is_cancelled: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct Task {
     pub id: u64,
     pub votes: u32,
@@ -64,8 +75,8 @@ pub enum DataKey {
     ActiveTask(u64),
     ArchivedTask(u64),
     Initialized,
-    ActiveTask(u64),
-    ArchivedTask(u64),
+    WithdrawalRequest(u64),
+    WithdrawalCounter,
 }
 
 /// Every public write operation exposed by VeroContract.
@@ -114,4 +125,9 @@ pub enum ContractError {
     TaskAlreadyArchived = 20,
     TaskNotStale = 21,
     SnapshotNotFound = 22,
+    WithdrawalNotFound = 23,
+    TimeLockActive = 24,
+    WithdrawalAlreadyExecuted = 25,
+    WithdrawalCancelled = 26,
+    InsufficientReputation = 27,
 }

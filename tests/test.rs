@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     Address, Env,
 };
 use vero_core_contracts::VeroContractClient;
@@ -22,7 +22,7 @@ fn setup() -> (Env, Address, Address, VeroContractClient<'static>) {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_addr = token.address();
 
-    client.initialize(&token_addr, &LOCK_THRESHOLD);
+    client.initialize(&admin, &token_addr, &LOCK_THRESHOLD);
 
     (env, admin, token_addr, client)
 }
@@ -815,4 +815,132 @@ fn test_all_costs_above_base_invocation_overhead() {
     for op in ops {
         assert!(client.get_estimated_cost(&op) > BASE, "{:?} is below base overhead", op);
     }
+}
+
+// ─── Treasury time-lock ─────────────────────────────────────────────
+
+const TIME_LOCK_LEDGERS: u32 = 17_280;
+
+fn fund_contract(env: &Env, token: &Address, client: &VeroContractClient, amount: i128) {
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(env, token);
+    asset_client.mint(&client.address, &amount);
+}
+
+#[test]
+fn test_withdrawal_blocked_before_time_lock_expires() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let recipient = Address::generate(&env);
+    let request_id = client.request_withdrawal(&admin, &recipient, &500i128);
+
+    // Still within the time-lock window — execute must fail
+    let result = client.try_execute_withdrawal(&request_id);
+    assert!(result.is_err(), "withdrawal must be blocked before time-lock expires");
+}
+
+#[test]
+fn test_withdrawal_succeeds_after_time_lock() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let recipient = Address::generate(&env);
+    let request_id = client.request_withdrawal(&admin, &recipient, &500i128);
+
+    // Advance ledger past the time-lock window
+    let start_seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(start_seq + TIME_LOCK_LEDGERS);
+
+    client.execute_withdrawal(&request_id);
+
+    let req = client.get_withdrawal_request(&request_id).unwrap();
+    assert!(req.is_executed);
+}
+
+#[test]
+fn test_withdrawal_request_stored_with_correct_fields() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let recipient = Address::generate(&env);
+    let amount: i128 = 250;
+    let request_id = client.request_withdrawal(&admin, &recipient, &amount);
+
+    let req = client.get_withdrawal_request(&request_id).unwrap();
+    assert_eq!(req.id, request_id);
+    assert_eq!(req.recipient, recipient);
+    assert_eq!(req.amount, amount);
+    assert!(!req.is_executed);
+    assert!(!req.is_cancelled);
+}
+
+#[test]
+fn test_withdrawal_can_be_cancelled_by_admin() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let recipient = Address::generate(&env);
+    let request_id = client.request_withdrawal(&admin, &recipient, &500i128);
+
+    client.cancel_withdrawal(&admin, &request_id);
+
+    let req = client.get_withdrawal_request(&request_id).unwrap();
+    assert!(req.is_cancelled);
+}
+
+#[test]
+fn test_cancelled_withdrawal_cannot_be_executed() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let recipient = Address::generate(&env);
+    let request_id = client.request_withdrawal(&admin, &recipient, &500i128);
+
+    client.cancel_withdrawal(&admin, &request_id);
+
+    // Advance past time-lock
+    let start_seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(start_seq + TIME_LOCK_LEDGERS);
+
+    let result = client.try_execute_withdrawal(&request_id);
+    assert!(result.is_err(), "cancelled withdrawal must not be executable");
+}
+
+#[test]
+fn test_withdrawal_cannot_be_executed_twice() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let recipient = Address::generate(&env);
+    let request_id = client.request_withdrawal(&admin, &recipient, &500i128);
+
+    let start_seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(start_seq + TIME_LOCK_LEDGERS);
+
+    client.execute_withdrawal(&request_id);
+    let result = client.try_execute_withdrawal(&request_id);
+    assert!(result.is_err(), "already-executed withdrawal must be rejected");
+}
+
+#[test]
+fn test_non_admin_cannot_request_withdrawal() {
+    let (env, _admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 1_000);
+
+    let stranger = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let result = client.try_request_withdrawal(&stranger, &recipient, &500i128);
+    assert!(result.is_err(), "non-admin must not be allowed to request a withdrawal");
+}
+
+#[test]
+fn test_withdrawal_counter_increments_per_request() {
+    let (env, admin, token, client) = setup();
+    fund_contract(&env, &token, &client, 2_000);
+
+    let recipient = Address::generate(&env);
+    let id1 = client.request_withdrawal(&admin, &recipient, &100i128);
+    let id2 = client.request_withdrawal(&admin, &recipient, &200i128);
+    assert_ne!(id1, id2);
+    assert_eq!(id2, id1 + 1);
 }

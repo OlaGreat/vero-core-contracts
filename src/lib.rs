@@ -8,6 +8,7 @@ mod reentrancy;
 mod reputation;
 mod storage;
 mod task;
+mod treasury;
 mod types;
 mod vault;
 pub mod events;
@@ -27,7 +28,7 @@ pub struct VeroContract;
 
 #[contractimpl]
 impl VeroContract {
-    pub fn initialize(env: Env, token: Address, lock_threshold: i128) -> Result<(), ContractError> {
+    pub fn initialize(env: Env, admin: Address, token: Address, lock_threshold: i128) -> Result<(), ContractError> {
         if env.storage().instance().get::<_, bool>(&DataKey::Initialized).unwrap_or(false) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -177,65 +178,6 @@ impl VeroContract {
         env.storage().instance().set(&DataKey::VaultAddress, &vault);
     }
 
-    // ─── Token locking ─────────────────────────────────────────────────
-
-    pub fn lock_tokens(env: Env, guardian: Address, amount: i128) -> Result<(), ContractError> {
-        guardian.require_auth();
-        let token: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenAddress)
-            .ok_or(ContractError::NotInitialized)?;
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&guardian, &env.current_contract_address(), &amount);
-        let key = DataKey::LockedBalance(guardian.clone());
-        let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(prev + amount));
-        Ok(())
-    }
-
-    pub fn unlock_tokens(env: Env, guardian: Address) -> Result<(), ContractError> {
-        guardian.require_auth();
-        if guardian::is_guardian(&env, &guardian) {
-            return Err(ContractError::StillGuardian);
-        }
-        let key = DataKey::LockedBalance(guardian.clone());
-        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        if amount > 0 {
-            let token: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenAddress)
-                .ok_or(ContractError::NotInitialized)?;
-            let token_client = soroban_sdk::token::Client::new(&env, &token);
-            token_client.transfer(&env.current_contract_address(), &guardian, &amount);
-            env.storage().instance().set(&key, &0i128);
-        }
-        Ok(())
-    }
-
-    pub fn resign_guardian(env: Env, guardian: Address) -> Result<(), ContractError> {
-        guardian.require_auth();
-        if !guardian::is_guardian(&env, &guardian) {
-            return Err(ContractError::NotGuardian);
-        }
-        let g_key = DataKey::Guardian(guardian.clone());
-        env.storage().instance().remove(&g_key);
-        let key = DataKey::LockedBalance(guardian.clone());
-        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        if amount > 0 {
-            let token: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenAddress)
-                .ok_or(ContractError::NotInitialized)?;
-            let token_client = soroban_sdk::token::Client::new(&env, &token);
-            token_client.transfer(&env.current_contract_address(), &guardian, &amount);
-            env.storage().instance().set(&key, &0i128);
-        }
-        Ok(())
-    }
-
     // ─── Task lifecycle ────────────────────────────────────────────
 
     /// Register a task. Requires the caller to be the stored admin.
@@ -346,7 +288,7 @@ impl VeroContract {
 
             if let Some(vault_addr) = env.storage().instance().get::<_, Address>(&DataKey::VaultAddress) {
                 let vault_client = vault::VaultClient::new(&env, &vault_addr);
-                vault_client.release_funds(task_id);
+                vault_client.release_funds(&task_id);
             }
         }
 
@@ -522,5 +464,38 @@ impl VeroContract {
             .instance()
             .get(&DataKey::Snapshot(timestamp))
             .ok_or(ContractError::SnapshotNotFound)
+    }
+
+    // ─── Treasury time-lock ────────────────────────────────────────
+
+    pub fn request_withdrawal(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<u64, ContractError> {
+        circuit_breaker::require_not_paused(&env)?;
+        treasury::request_withdrawal(&env, &admin, &recipient, amount)
+    }
+
+    pub fn execute_withdrawal(env: Env, request_id: u64) -> Result<(), ContractError> {
+        circuit_breaker::require_not_paused(&env)?;
+        treasury::execute_withdrawal(&env, request_id)
+    }
+
+    pub fn cancel_withdrawal(
+        env: Env,
+        admin: Address,
+        request_id: u64,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::require_not_paused(&env)?;
+        treasury::cancel_withdrawal(&env, &admin, request_id)
+    }
+
+    pub fn get_withdrawal_request(
+        env: Env,
+        request_id: u64,
+    ) -> Option<types::WithdrawalRequest> {
+        treasury::get_withdrawal_request(&env, request_id)
     }
 }
