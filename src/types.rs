@@ -2,6 +2,17 @@ use soroban_sdk::{contracterror, contracttype, Address, Map, Vec};
 
 #[contracttype]
 #[derive(Clone)]
+pub struct WithdrawalRequest {
+    pub id: u64,
+    pub recipient: Address,
+    pub amount: i128,
+    pub requested_at_ledger: u32,
+    pub is_executed: bool,
+    pub is_cancelled: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct Task {
     pub id: u64,
     pub votes: u32,

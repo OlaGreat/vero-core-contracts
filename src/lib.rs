@@ -28,7 +28,7 @@ pub struct VeroContract;
 
 #[contractimpl]
 impl VeroContract {
-    pub fn initialize(env: Env, token: Address, lock_threshold: i128) -> Result<(), ContractError> {
+    pub fn initialize(env: Env, admin: Address, token: Address, lock_threshold: i128) -> Result<(), ContractError> {
         if env.storage().instance().get::<_, bool>(&DataKey::Initialized).unwrap_or(false) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -308,7 +308,7 @@ impl VeroContract {
 
             if let Some(vault_addr) = env.storage().instance().get::<_, Address>(&DataKey::VaultAddress) {
                 let vault_client = vault::VaultClient::new(&env, &vault_addr);
-                vault_client.release_funds(task_id);
+                vault_client.release_funds(&task_id);
             }
         }
 

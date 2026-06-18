@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     Address, Env,
 };
 use vero_core_contracts::VeroContractClient;
@@ -22,7 +22,7 @@ fn setup() -> (Env, Address, Address, VeroContractClient<'static>) {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_addr = token.address();
 
-    client.initialize(&token_addr, &LOCK_THRESHOLD);
+    client.initialize(&admin, &token_addr, &LOCK_THRESHOLD);
 
     (env, admin, token_addr, client)
 }
