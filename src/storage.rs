@@ -4,7 +4,7 @@ use soroban_sdk::{Address, Env, Vec};
 pub const ARCHIVE_AFTER_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 pub fn active_task_key(task_id: u64) -> DataKey {
-    DataKey::ActiveTask(task_id)
+    DataKey::Task(task_id)
 }
 
 pub fn archived_task_key(task_id: u64) -> DataKey {

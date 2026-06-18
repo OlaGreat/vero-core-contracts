@@ -12,18 +12,19 @@ pub struct WithdrawalRequest {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
     pub id: u64,
     pub votes: u32,
     pub is_done: bool,
+    pub resolved_at: u64,
     pub total_weight_accrued: u64,
     pub is_cancelled: bool,
     pub resolved_at: u64,
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardStream {
     pub task_id: u64,
     pub contributor: Address,
@@ -51,26 +52,34 @@ pub struct Snapshot {
 pub use crate::contracts::storage_layout::DataKey;
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BatchCall {
-    RegisterTask(Address, u64),
-    CancelTask(Address, u64),
-    Vote(Address, u64),
-    AddGuardian(Address, Address),
-    RemoveGuardian(Address, Address),
-    SetReputation(Address, Address, u64),
-    LockTokens(Address, i128),
-    RequestUnlock(Address),
-    UnlockTokens(Address),
-    ResignGuardian(Address),
-    SetWeightThreshold(Address, u64),
-    SetVaultAddress(Address, Address),
-    StartRewardStream(Address, Address, Address, u64),
-    TogglePause(Address),
-    Pause(Address),
-    Unpause(Address),
-    RecordFailure(Address),
-    ResetCircuitBreaker(Address),
+#[derive(Clone)]
+pub enum DataKey {
+    Guardian(Address),
+    Reputation(Address),
+    WeightThreshold,
+    Task(u64),
+    Voted(u64, Address),
+    TaskVoters(u64),
+    Admin,
+    DripsAddress,
+    VaultAddress,
+    RewardStream(u64),
+    TokenAddress,
+    LockThreshold,
+    LockedBalance(Address),
+    ArchivedTask(u64),
+    Lock,
+    FailureCount,
+    Paused,
+    AllGuardians,
+    AllTasks,
+    AllRewardStreams,
+    Snapshot(u64),
+    AllSnapshots,
+    ActiveTask(u64),
+    ArchivedTask(u64),
+    Initialized,
+    WithdrawalTimelock(Address),
 }
 
 /// Every public write operation exposed by VeroContract.
@@ -116,6 +125,14 @@ pub enum ContractError {
     ContractPaused = 15,
     EscrowUnavailable = 16,
     TaskCancelled = 17,
+    InvalidAddress = 18,
+    InvalidAmount = 19,
+    InvalidConfig = 20,
+    InvalidRange = 21,
+    BatchTooLarge = 22,
+    TaskNotFound = 23,
+    TaskAlreadyArchived = 24,
+    TaskNotStale = 25,
     TaskNotFound = 18,
     BatchTooLarge = 19,
     TaskAlreadyArchived = 20,

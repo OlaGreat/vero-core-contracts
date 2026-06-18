@@ -1,13 +1,13 @@
-//! Pure, `no_std`-compatible consensus logic — **no Soroban `Env` dependency**.
-//!
-//! This module contains the arithmetic and state-transition rules for the
-//! weighted guardian consensus. Keeping this logic free of SDK types allows
-//! Kani (and other model checkers) to formally verify it without mocking the
-//! Soroban host environment.
-//!
-//! The contract's `vote()` entry point delegates to [`apply_vote`] after
-//! performing all authentication, authorisation, and storage I/O.
-
+/// Pure, `no_std`-compatible consensus logic — **no Soroban `Env` dependency**.
+///
+/// This module contains the arithmetic and state-transition rules for the
+/// weighted guardian consensus. Keeping this logic free of SDK types allows
+/// Kani (and other model checkers) to formally verify it without mocking the
+/// Soroban host environment.
+///
+/// The contract's `vote()` entry point delegates to [`apply_vote`] after
+/// performing all authentication, authorisation, and storage I/O.
+///
 /// Errors that can arise purely from consensus arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsensusError {
