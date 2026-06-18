@@ -312,15 +312,8 @@ impl VeroContract {
             }
         }
 
-        let mut all_votes: soroban_sdk::Vec<(u64, Address)> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllVotes)
-            .unwrap_or(soroban_sdk::Vec::new(&env));
-        all_votes.push_back((task_id, guardian.clone()));
-        env.storage().instance().set(&DataKey::AllVotes, &all_votes);
-
         env.storage().instance().set(&voted_key, &true);
+        storage::append_task_voter(&env, task_id, &guardian);
         storage::set_active_task(&env, &t);
 
         events::emit_weighted_vote(&env, task_id, &guardian, weight);
@@ -421,13 +414,13 @@ impl VeroContract {
         }
 
         let mut votes = Map::new(&env);
-        let all_votes: soroban_sdk::Vec<(u64, Address)> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllVotes)
-            .unwrap_or(soroban_sdk::Vec::new(&env));
-        for v in all_votes.iter() {
-            votes.set(v, true);
+        let all_tasks = task::get_all_tasks(&env);
+        for t in all_tasks.iter() {
+            let task_id = *t;
+            let task_voters = storage::get_task_voters(&env, task_id);
+            for voter in task_voters.iter() {
+                votes.set((task_id, voter.clone()), true);
+            }
         }
 
         let mut reward_streams = Map::new(&env);
